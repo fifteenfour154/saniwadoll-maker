@@ -5134,6 +5134,20 @@
             function setupTabDrag() {
                 const container = document.getElementById('moduleTabs');
 
+                // 标签栏方向判断（touch 拖拽与原生 HTML5 drag 两套分支共用同一个结论）：
+                // 横排（手机）用 X 轴判断插入位置 + 竖提示线；竖排（PC）用 Y 轴判断 + 横提示线。
+                // 关键：方向必须跟随「布局判定」本身，而不是再去读 getComputedStyle 的 flexDirection。
+                // 手机横排样式就写在 @media (max-width:768px) 里，与 isTouchLayout() 用的是同一条件；
+                // 直接复用 isTouchLayout() 可保证「标签栏什么时候横排」与「拖拽什么时候按 X 轴」
+                // 永远是同一个真相源，避免真机上计算样式读取偏差导致方向误判。
+                // 真机长按 button[draggable=true] 会触发原生 dragstart，走的正是本文件里的
+                // dragover/drop 分支；两套分支都经由本函数判断方向，保证真机与模拟器一致。
+                const isHorizontalTabs = () => isTouchLayout();
+                // 插在前/后：横排看 X（左半=插前），竖排看 Y（上半=插前）
+                const isInsertBefore = (clientX, clientY, rect) => isHorizontalTabs()
+                    ? clientX < rect.left + rect.width / 2
+                    : clientY < rect.top + rect.height / 2;
+
                 function hideDragLine() {
                     dragLine.style.display = 'none';
                 }
@@ -5172,13 +5186,9 @@
                     if (tab.classList.contains('custom-module')) {
                         let touchTimer = null;
 
-                        // 判断当前标签栏是否为横向（手机端）
-                        const isHorizontalTabs = () => {
-                            const c = document.getElementById('moduleTabs');
-                            return c && getComputedStyle(c).flexDirection === 'row';
-                        };
+                    // 方向判断复用 setupTabDrag 顶部的 isHorizontalTabs（与 drag 分支共用）
 
-                        wrapper.addEventListener('touchstart', (e) => {
+                    wrapper.addEventListener('touchstart', (e) => {
                             // 长按 200ms 才触发拖拽，防止和普通点击/长按菜单冲突
                             // 长按期间手指保持不动，标签栏尚未开始原生滚动，此时锁定滚动不会误伤普通滑动
                             touchTimer = setTimeout(() => {
@@ -5208,10 +5218,8 @@
                                 const targetTab = targetEl.closest('.tab-btn[data-module]');
                                 if (targetTab && targetTab !== dragSrcTab.querySelector('.tab-btn')) {
                                     const rect = targetTab.getBoundingClientRect();
-                                    // 横向用 X 判断插左/插右；纵向仍用 Y 判断插上/插下
-                                    const before = horizontal
-                                        ? touch.clientX < rect.left + rect.width / 2
-                                        : touch.clientY < rect.top + rect.height / 2;
+                                    // 横向用 X 判断插左/插右；纵向仍用 Y 判断插上/插下（与 drag 分支共用）
+                                    const before = isInsertBefore(touch.clientX, touch.clientY, rect);
 
                                     dragLine.style.display = 'block';
                                     if (horizontal) {
@@ -5249,9 +5257,7 @@
                                 const targetTab = targetEl.closest('.tab-btn[data-module]');
                                 if (targetTab && targetTab !== dragSrcTab.querySelector('.tab-btn')) {
                                     const rect = targetTab.getBoundingClientRect();
-                                    const before = horizontal
-                                        ? touch.clientX < rect.left + rect.width / 2
-                                        : touch.clientY < rect.top + rect.height / 2;
+                                    const before = isInsertBefore(touch.clientX, touch.clientY, rect);
                                     const targetWrapper = targetTab.closest('.custom-tab-wrapper') || targetTab;
 
                                     if (before) {
@@ -5285,35 +5291,59 @@
                         e.dataTransfer.dropEffect = 'move';
 
                         const rect = wrapper.getBoundingClientRect();
-                        const isAbove = (e.clientY - rect.top) < rect.height / 2;
-                        
+                        // 真机原生 drag 与 PC 共用方向判断：横排按 X、竖排按 Y
+                        const horizontal = isHorizontalTabs();
+                        const isBefore = isInsertBefore(e.clientX, e.clientY, rect);
+
                         // 找到容器的所有有效卡片
                         const allTabs = Array.from(document.querySelectorAll('#moduleTabs .tab-btn[data-module]'));
                         const validTabs = allTabs.filter(el => el !== dragSrcTab && el !== dragSrcTab.querySelector('.tab-btn'));
                         const idx = validTabs.indexOf(tab);
-                        
-                        let lineY = 0;
-                        if (isAbove) {
-                            // 想插在前面：画在当前卡片上边缘，和上一张卡片下边缘的正中间
-                            if (idx > 0) {
-                                const prevRect = validTabs[idx - 1].getBoundingClientRect();
-                                lineY = (prevRect.bottom + rect.top) / 2;
-                            } else {
-                                lineY = rect.top - 5;
-                            }
-                        } else {
-                            // 想插在后面：画在当前卡片下边缘，和下一张卡片上边缘的正中间
-                            if (idx < validTabs.length - 1) {
-                                const nextRect = validTabs[idx + 1].getBoundingClientRect();
-                                lineY = (rect.bottom + nextRect.top) / 2;
-                            } else {
-                                lineY = rect.bottom + 5;
-                            }
-                        }
-                        
+
                         dragLine.style.display = 'block';
-                        dragLine.style.top = (lineY + window.scrollY - 2) + 'px';
-                        dragLine.style.left = rect.left + 'px'; /* 去掉 -28，让左边缘和按钮对齐 */
+                        if (horizontal) {
+                            // 横排：画竖线，插在左/右边缘中点
+                            dragLine.classList.add('vertical');
+                            let lineX;
+                            if (isBefore) {
+                                if (idx > 0) {
+                                    const prevRect = validTabs[idx - 1].getBoundingClientRect();
+                                    lineX = (prevRect.right + rect.left) / 2;
+                                } else {
+                                    lineX = rect.left - 5;
+                                }
+                            } else {
+                                if (idx < validTabs.length - 1) {
+                                    const nextRect = validTabs[idx + 1].getBoundingClientRect();
+                                    lineX = (rect.right + nextRect.left) / 2;
+                                } else {
+                                    lineX = rect.right + 1;
+                                }
+                            }
+                            dragLine.style.left = (lineX + window.scrollX - 2) + 'px';
+                            dragLine.style.top = (rect.top + window.scrollY) + 'px';
+                        } else {
+                            // 竖排：画横线，插在上/下边缘中点（原逻辑）
+                            dragLine.classList.remove('vertical');
+                            let lineY = 0;
+                            if (isBefore) {
+                                if (idx > 0) {
+                                    const prevRect = validTabs[idx - 1].getBoundingClientRect();
+                                    lineY = (prevRect.bottom + rect.top) / 2;
+                                } else {
+                                    lineY = rect.top - 5;
+                                }
+                            } else {
+                                if (idx < validTabs.length - 1) {
+                                    const nextRect = validTabs[idx + 1].getBoundingClientRect();
+                                    lineY = (rect.bottom + nextRect.top) / 2;
+                                } else {
+                                    lineY = rect.bottom + 5;
+                                }
+                            }
+                            dragLine.style.top = (lineY + window.scrollY - 2) + 'px';
+                            dragLine.style.left = rect.left + 'px';
+                        }
                     });
 
                     wrapper.addEventListener('dragleave', () => {
@@ -5325,10 +5355,10 @@
                         e.preventDefault();
                         const container = wrapper.parentNode;
                         const rect = wrapper.getBoundingClientRect();
-                        const isAbove = (e.clientY - rect.top) < rect.height / 2;
+                        const isBefore = isInsertBefore(e.clientX, e.clientY, rect);
 
-                        // 插入 DOM
-                        if (isAbove) {
+                        // 插入 DOM（横排插左/右，竖排插上/下，共用方向判断）
+                        if (isBefore) {
                             container.insertBefore(dragSrcTab, wrapper);
                         } else {
                             container.insertBefore(dragSrcTab, wrapper.nextSibling);
@@ -5364,25 +5394,46 @@
                     const firstRect = firstTab.getBoundingClientRect();
                     const lastRect = lastTab.getBoundingClientRect();
                     
+                    // 首尾判断横排看 X、竖排看 Y（真机原生 drag 与 PC 一致）
+                    const horizontal = isHorizontalTabs();
+                    const pastLast = horizontal
+                        ? e.clientX > lastRect.left + lastRect.width / 2
+                        : e.clientY > lastRect.top + lastRect.height / 2;
+                    const pastFirst = horizontal
+                        ? e.clientX < firstRect.left + firstRect.width / 2
+                        : e.clientY < firstRect.top + firstRect.height / 2;
+
                     // 1. 越过最后一张卡片中线 -> 沉底
-                    if (e.clientY > lastRect.top + lastRect.height / 2) {
+                    if (pastLast) {
                         e.preventDefault();
                         e.dataTransfer.dropEffect = 'move';
                         dragLine.style.display = 'block';
-                        dragLine.style.top = (lastRect.bottom + 5 + window.scrollY) + 'px';
-                        
                         const lastWrapper = lastTab.closest('.custom-tab-wrapper') || lastTab;
-                        dragLine.style.left = lastWrapper.getBoundingClientRect().left + 'px';
+                        if (horizontal) {
+                            dragLine.classList.add('vertical');
+                            dragLine.style.left = (lastRect.right + 1 + window.scrollX) + 'px';
+                            dragLine.style.top = (lastRect.top + window.scrollY) + 'px';
+                        } else {
+                            dragLine.classList.remove('vertical');
+                            dragLine.style.top = (lastRect.bottom + 5 + window.scrollY) + 'px';
+                            dragLine.style.left = lastWrapper.getBoundingClientRect().left + 'px';
+                        }
                     }
                     // 2. 越过第一张卡片中线 -> 置顶
-                    else if (e.clientY < firstRect.top + firstRect.height / 2) {
+                    else if (pastFirst) {
                         e.preventDefault();
                         e.dataTransfer.dropEffect = 'move';
                         dragLine.style.display = 'block';
-                        dragLine.style.top = (firstRect.top - 7 + window.scrollY) + 'px';
-                        
                         const firstWrapper = firstTab.closest('.custom-tab-wrapper') || firstTab;
-                        dragLine.style.left = firstWrapper.getBoundingClientRect().left + 'px';
+                        if (horizontal) {
+                            dragLine.classList.add('vertical');
+                            dragLine.style.left = (firstRect.left - 5 + window.scrollX) + 'px';
+                            dragLine.style.top = (firstRect.top + window.scrollY) + 'px';
+                        } else {
+                            dragLine.classList.remove('vertical');
+                            dragLine.style.top = (firstRect.top - 7 + window.scrollY) + 'px';
+                            dragLine.style.left = firstWrapper.getBoundingClientRect().left + 'px';
+                        }
                     }
                 });
 
@@ -5398,8 +5449,17 @@
                     const firstRect = firstTab.getBoundingClientRect();
                     const lastRect = lastTab.getBoundingClientRect();
                     
-                    // 1. 如果在最后一张下方松手 -> 沉底
-                    if (e.clientY > lastRect.top + lastRect.height / 2) {
+                    // 首尾判断横排看 X、竖排看 Y（真机原生 drag 与 PC 一致）
+                    const horizontal = isHorizontalTabs();
+                    const pastLast = horizontal
+                        ? e.clientX > lastRect.left + lastRect.width / 2
+                        : e.clientY > lastRect.top + lastRect.height / 2;
+                    const pastFirst = horizontal
+                        ? e.clientX < firstRect.left + firstRect.width / 2
+                        : e.clientY < firstRect.top + firstRect.height / 2;
+
+                    // 1. 如果在最后一张之后（横排=右侧 / 竖排=下方）松手 -> 沉底
+                    if (pastLast) {
                         e.preventDefault();
                         e.stopPropagation();
                         
@@ -5420,8 +5480,8 @@
                         dragSrcTab = null; 
                         drawPreview();
                     }
-                    // 2. 如果在第一张上方松手 -> 置顶
-                    else if (e.clientY < firstRect.top + firstRect.height / 2) {
+                    // 2. 如果在第一张之前（横排=左侧 / 竖排=上方）松手 -> 置顶
+                    else if (pastFirst) {
                         e.preventDefault();
                         e.stopPropagation();
                         
